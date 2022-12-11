@@ -1,4 +1,4 @@
-# vuln_CI-CD_check
+# vuln_CI/CD_ec2
 
 ## CVE-2022-23852 - CI-CD Check
 
