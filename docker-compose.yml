@@ -1,0 +1,8 @@
+version: "3.8"
+services:
+  cicd:
+    image: test/cicd_test:latest
+    container_name: cicd_test
+    build: .
+    ports:
+     - "5001:5001"
