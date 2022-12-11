@@ -1,0 +1,108 @@
+name: Docker CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v1
+
+    - name: Login to DockerHub
+      uses: docker/login-action@v1
+      with:
+        username: ${{ secrets.DOCKERHUB_ID }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        
+    - name: Build and push
+      id: docker_build
+      uses: docker/build-push-action@v2
+      with:
+        push: true
+        tags: seungwook0417/cicd:latest
+
+    - name: Pull saba image
+      run: docker pull seungwook0417/saba:latest
+
+    - name: Pull scan image
+      run: docker pull seungwook0417/cicd:latest
+    
+    # env variables = HOST=0.0.0.0, PORT=8002, COSIGN_PASSWORD='1234', COSIGN_DOCKER_MEDIA_TYPES=1, Registry_URL='regi.seungwook.me'
+    # volume = /var/run/docker.sock:/var/run/docker.sock
+    - name: Get local image id
+      id: cicd_id
+      run: |
+        echo "::set-output name=id::$(docker images --format "{{.ID}}" seungwook0417/cicd:latest)"
+    - name: Run scaner image
+      run: |
+        docker run --add-host=host.docker.internal:host-gateway -d -p 8002:8002 -v /var/run/docker.sock:/var/run/docker.sock -e HOST=0.0.0.0 -e PORT=8002 -e COSIGN_PASSWORD='1234' -e COSIGN_DOCKER_MEDIA_TYPES=1 -e Registry_URL='regi.seungwook.me' --name saba seungwook0417/saba:latest
+        echo "Waiting for saba to start"
+        sleep 10
+        echo "Saba started"
+
+    - name: Run scan
+      run: |
+        result=$(curl -X POST -H "Content-Type: application/json" -d '{"image_id":"${{ steps.cicd_id.outputs.id }}"}' localhost:8002/image/scan | jq -r ".scan_result[].Severity")
+        echo $result
+
+        for i in $result
+        do
+            if [ "$i" = "CRITICAL" ]; then
+                echo "CRITICAL VULNERAVILITY"
+                exit 1                
+            fi
+        done
+
+    - name: Run sign
+      id: sign
+      run: |
+        sleep 10
+
+        # 키생성
+        curl -X 'POST' 'localhost:8002/image/keygen?password=1234' -H 'accept: application/json' -d ''
+
+        sleep 10
+
+        # sign image
+        #스캔 결과에 따른 이미지 사이닝 진행
+        signing=$(curl -X POST -H "Content-Type: application/json" -d '{"image_id":"${{ steps.cicd_id.outputs.id }}"}' localhost:8002/image/signing_image)
+        isSigned=$(curl $signing | awk '{print length($0)}')
+
+        echo "::set-output name=isSigned::$isSigned"
+        
+    - name: verify image
+      run: |
+        sleep 10
+
+        #사이닝 결과가 정상적일 경우 검증 실행 결과 리턴
+        if [ -z "${{ steps.sign.outputs.isSigned }}" ]; then
+            echo "SIGNING SUCCESS"
+            verify=$(curl -X POST -H "Content-Type: application/json" -d '{"image_id":"${{ steps.cicd_id.outputs.id }}"}' localhost:8002/image/verify_image)
+            echo $verify        
+        else 
+            echo "SIGNING FAILED"
+            exit 1                
+        fi
+      
+    # - name: EC2 Docker Run
+    #   uses: appleboy/ssh-action@master
+    #   with:
+    #     host: ${{ secrets.EC2_HOST }}
+    #     username: ubuntu
+    #     key: ${{ secrets.EC2_KEY }}
+    #     script: |
+    #       sudo docker rm -f $(docker ps -qa)
+    #       sudo docker rmi ${{ secrets.DOCKERHUB_ID }}/cicd:latest
+    #       sudo docker pull ${{ secrets.DOCKERHUB_ID }}/cicd:latest
+    #       sudo docker run -d -p 5001:5001 --name cicd ${{ secrets.DOCKERHUB_ID }}/cicd:latest
+    
+    
